@@ -10,7 +10,7 @@ This MCP server uses the `nbformat` library to safely manipulate notebook struct
 
 ## Latest Version
 
-**Current Version:** `0.3.1` - See the [CHANGELOG.md](CHANGELOG.md) for details on recent changes. Key additions include SFTP support, Streamable HTTP transport, and new tools like `notebook_edit_cell_output`, `notebook_bulk_add_cells`, and `notebook_get_server_path_context` to improve notebook editing and path handling.
+**Current Version:** `0.3.2` - See the [CHANGELOG.md](CHANGELOG.md) for details on recent changes. This version includes a fix for pydantic 2.12.0+ compatibility. Previous additions include SFTP support, Streamable HTTP transport, and new tools like `notebook_edit_cell_output`, `notebook_bulk_add_cells`, and `notebook_get_server_path_context` to improve notebook editing and path handling.
 
 ## Video Walkthrough
 
@@ -75,7 +75,7 @@ This project has both Python package dependencies and potentially external syste
 ### Python Dependencies
 
 *   **Python Version:** 3.10+
-*   **Core:** `mcp>=0.1.0`, `nbformat>=5.0`, `nbconvert>=6.0`, `ipython`, `jupyter_core`, `paramiko>=2.8.0`, `fastmcp>=2.7.0,<2.11`, `uvicorn>=0.20.0`, `starlette>=0.25.0`. These are installed automatically when you install `cursor-notebook-mcp` and provide support for all transport modes (stdio, Streamable HTTP, SSE).
+*   **Core:** `mcp>=0.1.0`, `nbformat>=5.0`, `nbconvert>=6.0`, `ipython`, `jupyter_core`, `paramiko>=2.8.0`, `fastmcp>=2.7.0,<2.11`, `pydantic>=2.0.0,<2.12.0`, `uvicorn>=0.20.0`, `starlette>=0.25.0`. These are installed automatically when you install `cursor-notebook-mcp` and provide support for all transport modes (stdio, Streamable HTTP, SSE).
 *   **Optional - Development/Testing:** `pytest>=7.0`, `pytest-asyncio>=0.18`, `pytest-cov`, `pytest-timeout>=2.0.0`, `coveralls`. Install via `pip install -e ".[dev]"` from source checkout.
 
 ### External System Dependencies (Optional)

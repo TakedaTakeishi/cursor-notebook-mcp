@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2025-11-07
+### Fixed
+- Added pydantic version constraint (`pydantic>=2.0.0,<2.12.0`) to prevent installation failures with pydantic 2.12.0+ (resolves [issue #19](https://github.com/jbeno/cursor-notebook-mcp/issues/19))
+- Pydantic 2.12.0 introduced stricter validation that is incompatible with the current version of fastmcp dependency
+
 ## [0.3.1] - 2025-07-15
 ### Fixed
 - Compatibility with breaking changes introduced in FastMCP 2.7.0
