@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+### Added
+- `notebook_write` now accepts a `content_file` parameter for building notebooks from structured Markdown files
+- Security analysis documentation in `docs/security_analysis.md`
+- Tests for security improvements in `tests/test_security_improvements.py`
+
+### Changed
+- `notebook_write` improved input validation: checks `content_file` is a string and exists before attempting to read
+- `notebook_write` enforces a maximum size for `content_file` (10x `max_cell_source_size`) to prevent DoS
+
+### Security
+- Documented risk levels for all 30 tools in `docs/security_analysis.md`
+- `notebook_write` now validates `content_file` parameter type and existence before processing
+
 ## [0.3.2] - 2025-11-07
 ### Fixed
 - Added pydantic version constraint (`pydantic>=2.0.0,<2.12.0`) to prevent installation failures with pydantic 2.12.0+ (resolves [issue #19](https://github.com/jbeno/cursor-notebook-mcp/issues/19))

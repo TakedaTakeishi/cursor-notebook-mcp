@@ -12,6 +12,77 @@ This MCP server uses the `nbformat` library to safely manipulate notebook struct
 
 **Current Version:** `0.3.2` - See the [CHANGELOG.md](CHANGELOG.md) for details on recent changes. This version includes a fix for pydantic 2.12.0+ compatibility. Previous additions include SFTP support, Streamable HTTP transport, and new tools like `notebook_edit_cell_output`, `notebook_bulk_add_cells`, and `notebook_get_server_path_context` to improve notebook editing and path handling.
 
+## Recent Improvements (Unreleased)
+
+The following improvements are available in this fork and will be included in a future release:
+
+### `notebook_write` with `content_file` parameter
+
+The `notebook_write` tool now accepts a `content_file` parameter, allowing you to build notebooks from structured Markdown files. This is especially useful for creating large notebooks (e.g., complete course lessons) without passing all cells as parameters.
+
+**File format:**
+
+```
+---CELL---
+cell_type: markdown
+---
+# Title
+
+---CELL---
+cell_type: code
+---
+print("Hello, World!")
+```
+
+**Usage:**
+
+```python
+notebook_write(
+    notebook_path="clase_1.ipynb",
+    content_file="contenido_clase_1.md"
+)
+```
+
+This complements the existing `cells` parameter — you can use either, depending on your workflow.
+
+### Improved input validation in `notebook_write`
+
+The validation logic in `notebook_write` was reorganized to provide clearer, earlier error messages:
+
+- **`content_file` type check:** if the parameter is not a string, raises `ValueError` immediately with a clear message, instead of failing later with a confusing error.
+- **`content_file` existence check:** validates the file exists before attempting to open it, raising `ValueError` (not `FileNotFoundError`).
+- **`content_file` size limit:** enforces a maximum size of `10x max_cell_source_size` to prevent DoS attacks via extremely large files. Raises `ValueError` if exceeded.
+- **No more `open()` in log_prefix:** the previous version called `open()` to count cells in the log message, which would fail before validation completed.
+
+These changes improve both security (no DoS) and developer experience (clearer error messages).
+
+### Security analysis of all tools
+
+A comprehensive security analysis of all 30 tools has been documented in [`docs/security_analysis.md`](docs/security_analysis.md). The analysis categorizes each tool by risk level (low/medium/high) and identifies `notebook_export` as the highest-risk tool due to its use of external subprocesses that capture stdout/stderr.
+
+Key findings from the analysis:
+- **Low risk (21 tools):** Most tools only return confirmations or static metadata.
+- **Medium risk (8 tools):** Tools that read user-controlled content (notebook_read, notebook_read_cell, notebook_search, etc.).
+- **High risk (1 tool):** `notebook_export` because it runs `nbconvert` and captures its output.
+
+> **Note:** Output sanitization was intentionally NOT implemented. The recommendation is to use `mypy` and document risks rather than sanitize (which could break functionality). See `docs/security_analysis.md` for the full rationale.
+
+### New test suite: `test_security_improvements.py`
+
+A dedicated test suite has been added at [`tests/test_security_improvements.py`](tests/test_security_improvements.py) with 10 tests covering:
+
+- `notebook_write` with `content_file` (successful path and error paths)
+- `notebook_write` with `cells` parameter (backward compatibility)
+- Input validation: `cell_type`, structure, `content_file` type
+- Notebook validity after writing
+- `content_file` size limit enforcement
+- `notebook_export` baseline behavior
+
+Run them with:
+```bash
+uv run --with pytest --with pytest-asyncio --with pytest-cov pytest tests/test_security_improvements.py -v
+```
+
 ## Video Walkthrough
 
 ### [Notebook MCP Server 0.3.0 Update](https://youtu.be/R3TGyuej-IM) (YouTube)

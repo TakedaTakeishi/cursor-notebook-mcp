@@ -87,6 +87,8 @@ class NotebookTools:
             self.notebook_edit_cell_output,
             self.notebook_bulk_add_cells,
             self.notebook_get_server_path_context,
+            self.notebook_write,
+            self.notebook_split_notebook,
         ]
         for tool_method in tools_to_register:
             # Use the method's name and docstring for registration
@@ -2840,7 +2842,7 @@ class NotebookTools:
                 "server_os_path_separator": os.path.sep,
                 "server_path_style": server_path_style,
                 "sftp_enabled": sftp_enabled,
-                "sftp_root": sftp_root, # This specific sftp_root might be less relevant now compared to original_sftp_specs
+                "sftp_root": sftp_root,
                 "original_sftp_specs": original_sftp_specs_from_config if sftp_enabled else [],
                 "provided_project_directory": project_directory,
                 "project_directory_status": project_dir_status,
@@ -2852,3 +2854,348 @@ class NotebookTools:
         except Exception as e:
             logger.exception(f"{log_prefix} FAILED - Unexpected error getting server path context: {e}")
             raise RuntimeError(f"An unexpected error occurred while fetching server path context: {e}") from e
+
+    async def notebook_write(
+        self,
+        notebook_path: str,
+        cells: List[Dict[str, str]] = None,
+        metadata: Dict[str, Any] = None,
+        content_file: str = None
+    ) -> str:
+        """Creates a new notebook or completely replaces all content in an existing notebook.
+
+        This is the ideal tool for creating notebooks from scratch or rewriting them entirely.
+        It accepts a complete list of cells and optional metadata, replacing any existing content.
+
+        Two ways to provide content:
+        1. Direct: pass `cells` as a list of {"cell_type": ..., "source": ...} dicts.
+        2. From file: pass `content_file` pointing to a structured .md file with cell markers.
+
+        The content_file format uses `---CELL---` markers to separate cells, with optional
+        metadata lines like `cell_type: code` before the `---` separator:
+
+        ```
+        ---CELL---
+        cell_type: markdown
+        ---
+        # This is a markdown cell
+
+        ---CELL---
+        cell_type: code
+        ---
+        print("hello")
+        ```
+
+        Parameters
+        ----------
+        notebook_path : str
+            Path to the notebook file (relative, absolute, or '~').
+            Must end with '.ipynb'.
+        cells : List[Dict[str, str]], optional
+            A list of dictionaries, where each dictionary defines a cell.
+            Each dictionary must have two keys:
+            - "cell_type": str, type of cell ('code', 'markdown', or 'raw').
+            - "source": str, the source content for the cell.
+            Example: `[{"cell_type": "markdown", "source": "# Title"}, {"cell_type": "code", "source": "print('Hello')"}]`
+        metadata : Dict[str, Any], optional
+            Optional dictionary containing notebook-level metadata to set.
+            If not provided, default metadata (kernelspec, language_info) will be used.
+        content_file : str, optional
+            Path to a structured Markdown file with `---CELL---` markers.
+            More efficient for large notebooks (avoids passing huge cell lists as parameters).
+
+        Returns
+        -------
+        str
+            Success message with the number of cells written and the notebook path.
+
+        Raises
+        ------
+        ValueError
+            If neither `cells` nor `content_file` is provided, or if both are empty.
+        PermissionError
+            If the notebook path resolves outside allowed workspace roots.
+        IOError
+            If writing the notebook fails.
+        ConnectionError
+            If SFTP is required but unavailable.
+
+        Notes
+        -----
+        - If the notebook already exists, ALL its cells will be replaced.
+        - If the notebook doesn't exist, it will be created.
+        - Parent directories will be created automatically if they don't exist.
+        - For markdown cells containing LaTeX, use '$ ... $' for inline math and '$$ ... $$' for display math.
+        """
+        log_prefix = self._log_prefix(
+            'notebook_write',
+            path=notebook_path,
+            num_cells=len(cells) if cells else 0
+        )
+        logger.info(f"{log_prefix} Called.")
+
+        if not notebook_path or not isinstance(notebook_path, str):
+            raise ValueError("Invalid notebook path provided.")
+        if not notebook_path.endswith(".ipynb"):
+            raise ValueError(f"Invalid file type: '{notebook_path}' must point to a .ipynb file.")
+
+        # Load cells from content_file if provided
+        if content_file:
+            if not isinstance(content_file, str):
+                raise ValueError("'content_file' must be a string.")
+            if not os.path.exists(content_file):
+                raise ValueError(f"Content file not found: '{content_file}'")
+
+            # Check file size to prevent loading excessively large files
+            file_size = os.path.getsize(content_file)
+            # Use 10x max_cell_source_size as a reasonable limit for total content
+            max_content_file_size = self.config.max_cell_source_size * 10
+            if file_size > max_content_file_size:
+                raise ValueError(
+                    f"Content file too large: {file_size} bytes "
+                    f"(max: {max_content_file_size} bytes)"
+                )
+
+            import re as _re
+            with open(content_file, 'r', encoding='utf-8') as _f:
+                _content = _f.read()
+            _parts = _re.split(r'^---CELL---\s*\n', _content, flags=_re.MULTILINE)
+            cells = []
+            for _part in _parts:
+                _part = _part.strip()
+                if not _part:
+                    continue
+                _lines = _part.split('\n', 1)
+                if len(_lines) < 2:
+                    continue
+                _meta_str = _lines[0]
+                _cell_content = _lines[1].rstrip()
+                _cell_type = 'markdown'
+                for _meta_line in _meta_str.split('\n'):
+                    _meta_line = _meta_line.strip()
+                    if _meta_line.startswith('cell_type:'):
+                        _cell_type = _meta_line.split(':', 1)[1].strip()
+                cells.append({'cell_type': _cell_type, 'source': _cell_content})
+            logger.info(f"{log_prefix} Loaded {len(cells)} cells from {content_file}")
+
+        if cells is None:
+            cells = []
+
+        if not cells:
+            logger.warning(f"{log_prefix} No cells provided. Creating empty notebook.")
+
+        for i, cell_data in enumerate(cells):
+            if not isinstance(cell_data, dict) or "cell_type" not in cell_data or "source" not in cell_data:
+                raise ValueError(
+                    f"Each item in 'cells' must be a dictionary with 'cell_type' and 'source' keys. "
+                    f"Problem found at index {i}: {cell_data}"
+                )
+            source = cell_data["source"]
+            cell_type = cell_data["cell_type"]
+            if not isinstance(source, str):
+                raise ValueError(f"Source for cell at index {i} must be a string. Got: {type(source)}")
+            if not isinstance(cell_type, str):
+                raise ValueError(f"Cell type for cell at index {i} must be a string. Got: {type(cell_type)}")
+
+            if len(source.encode('utf-8')) > self.config.max_cell_source_size:
+                raise ValueError(
+                    f"Source content for cell at index {i} (type: {cell_type}) "
+                    f"exceeds maximum allowed size ({self.config.max_cell_source_size} bytes)."
+                )
+            if cell_type not in ['code', 'markdown', 'raw']:
+                raise ValueError(f"Invalid cell_type '{cell_type}' for cell at index {i}. Must be 'code', 'markdown', or 'raw'.")
+
+        try:
+            is_remote, absolute_op_path = notebook_ops.resolve_path_and_check_permissions(
+                notebook_path, self._get_allowed_local_roots(), self.sftp_manager
+            )
+
+            nb = nbformat.v4.new_notebook()
+
+            if metadata:
+                nb.metadata.update(metadata)
+
+            for cell_data in cells:
+                cell_type = cell_data['cell_type']
+                source = cell_data['source']
+
+                if cell_type == 'code':
+                    new_cell = nbformat.v4.new_code_cell(source)
+                elif cell_type == 'markdown':
+                    new_cell = nbformat.v4.new_markdown_cell(source)
+                elif cell_type == 'raw':
+                    new_cell = nbformat.v4.new_raw_cell(source)
+
+                nb.cells.append(new_cell)
+
+            if is_remote:
+                if not self.sftp_manager:
+                    raise ConnectionError("SFTP manager required for remote notebook operations.")
+                json_content = nbformat.writes(nb)
+                await asyncio.to_thread(self.sftp_manager.write_file, absolute_op_path, json_content)
+            else:
+                parent_dir = os.path.dirname(absolute_op_path)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+                await asyncio.to_thread(nbformat.write, nb, absolute_op_path)
+
+            logger.info(
+                f"{log_prefix} SUCCESS - Wrote {len(cells)} cells to {absolute_op_path}"
+            )
+            return (
+                f"Successfully wrote {len(cells)} cells to {notebook_path}"
+            )
+
+        except (ValueError, PermissionError, IOError, ConnectionError) as e:
+            logger.error(f"{log_prefix} FAILED - {type(e).__name__}: {e}", exc_info=(self.config.log_level == logging.DEBUG))
+            raise
+        except Exception as e:
+            logger.exception(f"{log_prefix} FAILED - Unexpected error: {e}")
+            raise RuntimeError(f"An unexpected error occurred writing notebook '{notebook_path}': {e}") from e
+
+    async def notebook_split_notebook(
+        self,
+        source_path: str,
+        output_path: str,
+        cell_start: int,
+        cell_end: int = -1,
+        title: str = None
+    ) -> str:
+        """Extracts a range of cells from a source notebook into a new notebook,
+        preserving cell types, sources, outputs, execution counts, and metadata.
+
+        Parameters
+        ----------
+        source_path : str
+            Path to the source notebook file (relative, absolute, or '~').
+        output_path : str
+            Path for the output notebook (must end with .ipynb).
+        cell_start : int
+            0-based index of the first cell to extract (inclusive).
+        cell_end : int, optional
+            0-based index of the last cell to extract (inclusive).
+            If -1 or omitted, extracts to the end of the notebook.
+        title : str, optional
+            New title for the output notebook. If provided, replaces the
+            content of the first markdown H1 heading found in the extracted cells.
+
+        Returns
+        -------
+        str
+            Success message with cell count and paths.
+
+        Raises
+        ------
+        ValueError
+            If paths are invalid, cell_start/cell_end are out of bounds,
+            or cell_start > cell_end.
+        FileNotFoundError
+            If the source notebook doesn't exist.
+        PermissionError
+            If paths are outside allowed workspace roots.
+        IOError
+            If reading or writing fails.
+        ConnectionError
+            If SFTP is required but unavailable.
+        """
+        log_prefix = self._log_prefix(
+            'notebook_split_notebook',
+            source=source_path,
+            output=output_path,
+            start=cell_start,
+            end=cell_end
+        )
+        logger.info(f"{log_prefix} Called.")
+
+        try:
+            if not output_path.endswith('.ipynb'):
+                raise ValueError(f"Output path must end with .ipynb: {output_path}")
+
+            # Resolve source path
+            is_remote_src, absolute_src_path = notebook_ops.resolve_path_and_check_permissions(
+                source_path, self._get_allowed_local_roots(), self.sftp_manager
+            )
+
+            # Read source notebook
+            if is_remote_src:
+                if not self.sftp_manager:
+                    raise ConnectionError("SFTP manager required for remote notebook operations.")
+                content_bytes = await asyncio.to_thread(self.sftp_manager.read_file, absolute_src_path)
+                src_nb = nbformat.reads(content_bytes.decode('utf-8'), as_version=4)
+            else:
+                with open(absolute_src_path, "r", encoding='utf-8') as f:
+                    src_nb = await asyncio.to_thread(nbformat.read, f, as_version=4)
+
+            num_cells = len(src_nb.cells)
+
+            # Validate cell range
+            if not 0 <= cell_start < num_cells:
+                raise ValueError(
+                    f"cell_start {cell_start} is out of bounds (0-{num_cells - 1})."
+                )
+
+            if cell_end == -1:
+                cell_end = num_cells - 1
+
+            if not cell_start <= cell_end < num_cells:
+                raise ValueError(
+                    f"cell_end {cell_end} is out of bounds (must be >= {cell_start} and <= {num_cells - 1})."
+                )
+
+            # Build output notebook
+            out_nb = nbformat.v4.new_notebook()
+            out_nb.metadata.update(dict(src_nb.metadata))
+
+            from copy import deepcopy
+            for i in range(cell_start, cell_end + 1):
+                copied_cell = deepcopy(src_nb.cells[i])
+                out_nb.cells.append(copied_cell)
+
+            # Apply title if provided
+            if title:
+                for cell in out_nb.cells:
+                    if cell.cell_type == 'markdown':
+                        src = cell.source
+                        if isinstance(src, str):
+                            lines = src.split('\n')
+                        else:
+                            lines = src.split('\n')
+                        for j, line in enumerate(lines):
+                            if line.startswith('# '):
+                                lines[j] = f'# {title}'
+                                cell.source = '\n'.join(lines)
+                                break
+                        break
+
+            # Write output notebook
+            is_remote_out, absolute_out_path = notebook_ops.resolve_path_and_check_permissions(
+                output_path, self._get_allowed_local_roots(), self.sftp_manager
+            )
+
+            if is_remote_out:
+                if not self.sftp_manager:
+                    raise ConnectionError("SFTP manager required for remote notebook operations.")
+                json_content = nbformat.writes(out_nb)
+                await asyncio.to_thread(self.sftp_manager.write_file, absolute_out_path, json_content)
+            else:
+                parent_dir = os.path.dirname(absolute_out_path)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+                await asyncio.to_thread(nbformat.write, out_nb, absolute_out_path)
+
+            extracted_count = cell_end - cell_start + 1
+            logger.info(
+                f"{log_prefix} SUCCESS - Extracted {extracted_count} cells from "
+                f"{absolute_src_path} to {absolute_out_path}"
+            )
+            return (
+                f"Successfully extracted {extracted_count} cells "
+                f"(indices {cell_start}-{cell_end}) from {source_path} to {output_path}"
+            )
+
+        except (ValueError, FileNotFoundError, IndexError, IOError, PermissionError, ConnectionError) as e:
+            logger.error(f"{log_prefix} FAILED - {type(e).__name__}: {e}", exc_info=(self.config.log_level == logging.DEBUG))
+            raise
+        except Exception as e:
+            logger.exception(f"{log_prefix} FAILED - Unexpected error: {e}")
+            raise RuntimeError(f"An unexpected error occurred splitting notebook: {e}") from e
