@@ -14,7 +14,7 @@ This MCP server uses the `nbformat` library to safely manipulate notebook struct
 
 ## Recent Improvements (Unreleased)
 
-The following improvements are available in this fork and will be included in a future release:
+The following improvements are available in this fork
 
 ### `notebook_write` with `content_file` parameter
 
